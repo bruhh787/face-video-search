@@ -63,16 +63,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    @JvmName("updateSort")
     fun setSort(s: Sort) {
         sort = s
         refresh()
     }
 
+    @JvmName("updateThreshold")
     fun setThreshold(t: Float) {
         threshold = t
         refresh(250)
     }
 
+    @JvmName("updateMode")
     fun setMode(m: Indexer.Mode) {
         mode = m
     }
