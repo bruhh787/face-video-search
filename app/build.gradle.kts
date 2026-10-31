@@ -26,8 +26,8 @@ android {
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 
-    // the face model must stay uncompressed so it can be memory-mapped
-    androidResources { noCompress += "tflite" }
+    // keep the face model uncompressed (faster install, and openFd() needs it)
+    androidResources { noCompress += "onnx" }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }
 
@@ -48,6 +48,6 @@ dependencies {
 
     // face detection (model bundled in the app, works offline)
     implementation("com.google.mlkit:face-detection:16.1.6")
-    // face embedding model runtime
-    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    // ArcFace embedding model runtime
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
 }
