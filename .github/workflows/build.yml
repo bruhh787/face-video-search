@@ -1,0 +1,39 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Download face recognition model (FaceNet-512, ~24 MB)
+        run: |
+          mkdir -p app/src/main/assets
+          F=app/src/main/assets/facenet_512.tflite
+          if [ ! -f "$F" ]; then
+            curl -L --fail -o "$F" https://raw.githubusercontent.com/shubham0204/FaceRecognition_With_FaceNet_Android/master/app/src/main/assets/facenet_512.tflite
+          fi
+          ls -la app/src/main/assets
+          test "$(stat -c%s "$F")" -gt 20000000
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: face-video-search-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
