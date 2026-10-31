@@ -30,6 +30,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -92,6 +94,8 @@ fun MainScreen(
     // refresh results while a scan is running (every 5 videos) and when it starts/stops
     LaunchedEffect(idx.running, idx.done / 5) { vm.refresh() }
 
+    val list = if (vm.tab == 0) vm.results else (vm.durResults ?: emptyList())
+
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         modifier = Modifier.fillMaxSize(),
@@ -103,23 +107,36 @@ fun MainScreen(
             Text("Face Video Search", style = MaterialTheme.typography.headlineSmall)
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
-            ScanCard(vm, idx, onStartScan)
+            TabRow(selectedTabIndex = vm.tab) {
+                Tab(selected = vm.tab == 0, onClick = { vm.selectTab(0) }, text = { Text("Face search") })
+                Tab(selected = vm.tab == 1, onClick = { vm.selectTab(1) }, text = { Text("Duration search") })
+            }
+        }
+        if (vm.tab == 0) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                ScanCard(vm, idx, onStartScan)
+            }
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                FaceCard(vm, onPickFaces)
+            }
+        } else {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                DurationCard(vm)
+            }
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
-            FaceCard(vm, onPickFaces)
-        }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            DurationCard(vm)
-        }
-        item(span = { GridItemSpan(maxLineSpan) }) {
-            val label = buildString {
-                append("${vm.results.size} video${if (vm.results.size == 1) "" else "s"}")
-                if (vm.refs.isNotEmpty()) append(" with this face")
-                if (vm.busy) append("  ·  searching…")
+            val n = list.size
+            val plural = if (n == 1) "" else "s"
+            val label = if (vm.tab == 0) {
+                if (vm.refs.isEmpty()) "Pick a face photo above to search"
+                else "$n video$plural with this face" + if (vm.busy) "  ·  searching…" else ""
+            } else {
+                if (vm.durResults == null) "Set a length above and press Search"
+                else "$n video$plural  ·  ${vm.durInfo}"
             }
             Text(label, style = MaterialTheme.typography.titleSmall)
         }
-        items(vm.results, key = { it.id }) { v ->
+        items(list, key = { it.id }) { v ->
             VideoTile(v, loader) { onOpen(v) }
         }
     }
@@ -218,7 +235,7 @@ private fun FaceCard(vm: MainViewModel, onPickFaces: () -> Unit) {
 private fun DurationCard(vm: MainViewModel) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Duration filter", style = MaterialTheme.typography.titleMedium)
+            Text("Search by duration", style = MaterialTheme.typography.titleMedium)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (p in PRESETS) {
                     FilterChip(
@@ -242,13 +259,26 @@ private fun DurationCard(vm: MainViewModel) {
                     modifier = Modifier.weight(1f)
                 )
             }
-            if (vm.refs.isEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = vm.sort == Sort.NEWEST, onClick = { vm.setSort(Sort.NEWEST) }, label = { Text("Newest") })
-                    FilterChip(selected = vm.sort == Sort.SHORTEST, onClick = { vm.setSort(Sort.SHORTEST) }, label = { Text("Shortest") })
-                    FilterChip(selected = vm.sort == Sort.LONGEST, onClick = { vm.setSort(Sort.LONGEST) }, label = { Text("Longest") })
-                }
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = vm.sort == Sort.NEWEST, onClick = { vm.setSort(Sort.NEWEST) }, label = { Text("Newest") })
+                FilterChip(selected = vm.sort == Sort.SHORTEST, onClick = { vm.setSort(Sort.SHORTEST) }, label = { Text("Shortest") })
+                FilterChip(selected = vm.sort == Sort.LONGEST, onClick = { vm.setSort(Sort.LONGEST) }, label = { Text("Longest") })
             }
+            Button(onClick = { vm.searchDuration() }, enabled = !vm.durBusy, modifier = Modifier.fillMaxWidth()) {
+                Text(if (vm.durBusy) "Scanning…" else "Search videos")
+            }
+            if (vm.durBusy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text(
+                    if (vm.durTotal > 0) "Measuring video lengths… ${vm.durDone} / ${vm.durTotal}"
+                    else "Scanning ${vm.stats.total} videos…",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Text(
+                "Pick a preset or type a range, then press Search. Leave Min empty for \"up to\", leave Max empty for \"or longer\".",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }

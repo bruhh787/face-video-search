@@ -48,6 +48,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var message by mutableStateOf<String?>(null)
         private set
 
+    // tabs + duration search (separate from face search)
+    var tab by mutableStateOf(0)
+        private set
+    var durResults by mutableStateOf<List<VideoItem>?>(null)
+        private set
+    var durBusy by mutableStateOf(false)
+        private set
+    var durDone by mutableStateOf(0)
+        private set
+    var durTotal by mutableStateOf(0)
+        private set
+    var durInfo by mutableStateOf("")
+        private set
+
     private var job: Job? = null
 
     fun sync() {
@@ -57,16 +71,61 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun selectTab(i: Int) {
+        tab = i
+    }
+
     fun setRange(min: String, max: String) {
         minText = min
         maxText = max
-        refresh()
+    }
+
+    fun searchDuration() {
+        if (durBusy) return
+        var minMs = parseMs(minText) ?: 0L
+        var maxMs = parseMs(maxText) ?: Long.MAX_VALUE
+        if (minMs > maxMs) { val t = minMs; minMs = maxMs; maxMs = t }
+        val lo = minMs
+        val hi = maxMs
+        val sortNow = sort
+        viewModelScope.launch {
+            durBusy = true
+            durDone = 0
+            durTotal = 0
+            try {
+                val list = withContext(Dispatchers.IO) {
+                    DurationScan.run(getApplication<Application>()) { d, t ->
+                        durDone = d
+                        durTotal = t
+                    }
+                    db.listVideos(lo, hi, sortNow)
+                }
+                durResults = list
+                durInfo = describeRange(lo, hi)
+                stats = withContext(Dispatchers.IO) { db.stats() }
+            } finally {
+                durBusy = false
+            }
+        }
+    }
+
+    private fun describeRange(lo: Long, hi: Long): String = when {
+        lo <= 0L && hi == Long.MAX_VALUE -> "any length"
+        lo <= 0L -> "up to " + fmtDuration(hi)
+        hi == Long.MAX_VALUE -> fmtDuration(lo) + " or longer"
+        else -> fmtDuration(lo) + " to " + fmtDuration(hi)
     }
 
     @JvmName("updateSort")
     fun setSort(s: Sort) {
         sort = s
-        refresh()
+        durResults = durResults?.let { l ->
+            when (s) {
+                Sort.NEWEST -> l.sortedByDescending { it.dateAdded }
+                Sort.SHORTEST -> l.sortedBy { it.durationMs }
+                Sort.LONGEST -> l.sortedByDescending { it.durationMs }
+            }
+        }
     }
 
     @JvmName("updateThreshold")
@@ -102,15 +161,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             delay(debounceMs)
             busy = true
             try {
-                val minMs = parseMs(minText) ?: 0L
-                val maxMs = parseMs(maxText) ?: Long.MAX_VALUE
                 val currentRefs = refs.map { it.emb }
                 val th = threshold
-                val sortNow = sort
                 val (s, r) = withContext(Dispatchers.Default) {
                     val st = db.stats()
-                    val list = if (currentRefs.isEmpty()) db.listVideos(minMs, maxMs, sortNow)
-                    else db.searchByFace(currentRefs, th, minMs, maxMs)
+                    val list = if (currentRefs.isEmpty()) emptyList<VideoItem>()
+                    else db.searchByFace(currentRefs, th, 0L, Long.MAX_VALUE)
                     st to list
                 }
                 stats = s
