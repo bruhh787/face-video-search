@@ -20,15 +20,18 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Download face recognition model (FaceNet-512, ~24 MB)
+      - name: Download ArcFace model (InsightFace buffalo_l, w600k_r50, ~170 MB)
         run: |
           mkdir -p app/src/main/assets
-          F=app/src/main/assets/facenet_512.tflite
+          F=app/src/main/assets/arcface.onnx
           if [ ! -f "$F" ]; then
-            curl -L --fail -o "$F" https://raw.githubusercontent.com/shubham0204/FaceRecognition_With_FaceNet_Android/master/app/src/main/assets/facenet_512.tflite
+            curl -L --fail --retry 3 -o buffalo.zip https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
+            unzip -o -j buffalo.zip w600k_r50.onnx -d /tmp/model
+            mv /tmp/model/w600k_r50.onnx "$F"
+            # Lighter/faster alternative (13 MB): use buffalo_sc.zip and w600k_mbf.onnx instead.
           fi
           ls -la app/src/main/assets
-          test "$(stat -c%s "$F")" -gt 20000000
+          test "$(stat -c%s "$F")" -gt 10000000
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
