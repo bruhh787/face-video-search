@@ -34,7 +34,7 @@ data class VideoItem(
  *  faces(video_id, time_ms, emb = 512 float32 little-endian)
  */
 class Db private constructor(private val appCtx: Context) :
-    SQLiteOpenHelper(appCtx, "faces.db", null, 1) {
+    SQLiteOpenHelper(appCtx, "faces.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -46,7 +46,13 @@ class Db private constructor(private val appCtx: Context) :
         db.execSQL("CREATE INDEX idx_faces_video ON faces(video_id)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // v2: embeddings now come from ArcFace; the old FaceNet vectors are not comparable -> rescan
+        if (oldVersion < 2) {
+            db.execSQL("DELETE FROM faces")
+            db.execSQL("UPDATE videos SET scanned=0, faces=0")
+        }
+    }
 
     private class Row(val id: Long, val name: String, val dur: Long, val size: Long, val date: Long)
 

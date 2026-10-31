@@ -209,7 +209,7 @@ private fun FaceCard(vm: MainViewModel, onPickFaces: () -> Unit) {
                 )
                 Slider(
                     value = vm.threshold, onValueChange = { vm.setThreshold(it) },
-                    valueRange = 0.4f..0.9f
+                    valueRange = 0.2f..0.8f
                 )
                 if (vm.stats.indexed < vm.stats.total) {
                     Text(

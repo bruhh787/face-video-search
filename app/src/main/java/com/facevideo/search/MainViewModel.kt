@@ -33,7 +33,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // face search
     var refs by mutableStateOf<List<Reference>>(emptyList())
         private set
-    var threshold by mutableStateOf(0.70f)
+    var threshold by mutableStateOf(0.40f)
         private set
 
     var mode by mutableStateOf(Indexer.Mode.BALANCED)
