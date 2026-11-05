@@ -1,6 +1,7 @@
 package com.facevideo.search
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -8,11 +9,15 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +37,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -39,6 +46,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContent {
             AppTheme {
                 Surface(Modifier.fillMaxSize()) { Root() }
@@ -53,8 +61,16 @@ fun AppTheme(content: @Composable () -> Unit) {
     val ctx = LocalContext.current
     val scheme = when {
         Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
-        dark -> darkColorScheme()
-        else -> lightColorScheme()
+        dark -> darkColorScheme(
+            primary = Color(0xFFA9A6FF), onPrimary = Color(0xFF1B1768),
+            tertiary = Color(0xFF5EDDCF), onTertiary = Color(0xFF00382F),
+            background = Color(0xFF111118), surface = Color(0xFF111118),
+        )
+        else -> lightColorScheme(
+            primary = Color(0xFF4F46E5), onPrimary = Color.White,
+            tertiary = Color(0xFF0D9488), onTertiary = Color.White,
+            background = Color(0xFFF8F7FC), surface = Color(0xFFF8F7FC),
+        )
     }
     MaterialTheme(colorScheme = scheme, content = content)
 }
@@ -78,6 +94,10 @@ fun Root(vm: MainViewModel = viewModel()) {
         vm.addReferences(uris)
     }
 
+    val deleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
+        vm.onDeleteResult(r.resultCode == Activity.RESULT_OK)
+    }
+
     LaunchedEffect(granted) { if (granted) vm.sync() }
 
     if (!granted) {
@@ -86,11 +106,14 @@ fun Root(vm: MainViewModel = viewModel()) {
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text("Face Video Search", style = MaterialTheme.typography.headlineMedium)
+            Text("Face Video Search", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(12.dp))
             Text(
-                "\nThis app needs access to your videos to scan them. Everything stays on your phone — nothing is uploaded.\n",
-                style = MaterialTheme.typography.bodyMedium
+                "Find people in your videos, filter by length and clean up duplicates. " +
+                    "The app needs access to your videos. Everything stays on your phone.",
+                style = MaterialTheme.typography.bodyLarge
             )
+            Spacer(Modifier.height(24.dp))
             Button(onClick = { permLauncher.launch(videoPerm) }) { Text("Allow video access") }
         }
         return
@@ -108,6 +131,7 @@ fun Root(vm: MainViewModel = viewModel()) {
         onPickFaces = {
             pickFaces.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
         },
+        onRequestDelete = { sender -> deleteLauncher.launch(IntentSenderRequest.Builder(sender).build()) },
         onOpen = { v ->
             try {
                 ctx.startActivity(

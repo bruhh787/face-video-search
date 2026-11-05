@@ -44,9 +44,7 @@ class FaceEngine(ctx: Context) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
     private val session: OrtSession
     private val inputName: String
-    private val inBuf = FloatBuffer.allocate(3 * SIZE * SIZE)
-    private val pixels = IntArray(SIZE * SIZE)
-    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val paint get() = Paint(Paint.FILTER_BITMAP_FLAG) // per call: workers share this engine
 
     init {
         // ONNX Runtime wants a real file; copy the bundled model out of the APK once (it is large).
@@ -58,7 +56,8 @@ class FaceEngine(ctx: Context) : AutoCloseable {
             tmp.renameTo(dst)
         }
         val opts = OrtSession.SessionOptions().apply {
-            setIntraOpNumThreads(4)
+            setIntraOpNumThreads(2)
+            setInterOpNumThreads(1)
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
         }
         session = env.createSession(dst.absolutePath, opts)
@@ -69,7 +68,6 @@ class FaceEngine(ctx: Context) : AutoCloseable {
      * @param strict true for video frames (skips tiny / strongly turned faces, which give noisy matches);
      *               false for the reference photo the user picks.
      */
-    @Synchronized
     fun detect(frame: Bitmap, strict: Boolean, wantPreview: Boolean = false, maxFaces: Int = 6): List<Result> {
         val bmp = if (frame.config == Bitmap.Config.ARGB_8888) frame else frame.copy(Bitmap.Config.ARGB_8888, false)
         val faces = Tasks.await(detector.process(InputImage.fromBitmap(bmp, 0)))
@@ -154,15 +152,18 @@ class FaceEngine(ctx: Context) : AutoCloseable {
     }
 
     private fun embed(crop: Bitmap): FloatArray {
+        // buffers are per call so several scan workers can share one engine
+        val pixels = IntArray(SIZE * SIZE)
         crop.getPixels(pixels, 0, SIZE, 0, 0, SIZE, SIZE)
         // NCHW, RGB, (x - 127.5) / 127.5
         val plane = SIZE * SIZE
-        val arr = inBuf.array()
+        val inBuf: FloatBuffer = java.nio.ByteBuffer.allocateDirect(3 * plane * 4)
+            .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
         for (i in 0 until plane) {
             val p = pixels[i]
-            arr[i] = (((p shr 16) and 0xFF) - 127.5f) / 127.5f
-            arr[plane + i] = (((p shr 8) and 0xFF) - 127.5f) / 127.5f
-            arr[2 * plane + i] = ((p and 0xFF) - 127.5f) / 127.5f
+            inBuf.put(i, (((p shr 16) and 0xFF) - 127.5f) / 127.5f)
+            inBuf.put(plane + i, (((p shr 8) and 0xFF) - 127.5f) / 127.5f)
+            inBuf.put(2 * plane + i, ((p and 0xFF) - 127.5f) / 127.5f)
         }
         inBuf.rewind()
         val tensor = OnnxTensor.createTensor(env, inBuf, longArrayOf(1, 3, SIZE.toLong(), SIZE.toLong()))

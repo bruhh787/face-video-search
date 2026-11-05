@@ -2,13 +2,17 @@ package com.facevideo.search
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.content.IntentSender
 import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -62,7 +66,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var durInfo by mutableStateOf("")
         private set
 
+    // duplicate finder
+    var dupGroups by mutableStateOf<List<DupGroup>>(emptyList())
+        private set
+    var dupScanned by mutableStateOf(false)
+        private set
+    var dupBusy by mutableStateOf(false)
+        private set
+    var dupStage by mutableStateOf("")
+        private set
+    var dupDone by mutableStateOf(0)
+        private set
+    var dupTotal by mutableStateOf(0)
+        private set
+    var preferBucket by mutableStateOf<String?>(null)
+        private set
+    var keepers by mutableStateOf<Map<Int, Long>>(emptyMap())
+        private set
+    var skipped by mutableStateOf<Set<Int>>(emptySet())
+        private set
+    var useTrash by mutableStateOf(true)
+
     private var job: Job? = null
+    private var dupJob: Job? = null
+    private var pendingDeleteIds: List<Long> = emptyList()
 
     fun sync() {
         viewModelScope.launch {
@@ -216,6 +243,110 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val s = 1600f / m
                 dec.setTargetSize((info.size.width * s).toInt(), (info.size.height * s).toInt())
             }
+        }
+    }
+
+    // ---------------- duplicates ----------------
+
+    fun scanDuplicates() {
+        if (dupBusy) return
+        dupJob = viewModelScope.launch {
+            dupBusy = true
+            dupStage = "Starting"
+            dupDone = 0
+            dupTotal = 0
+            try {
+                val g = DuplicateScan.run(getApplication<Application>()) { st, d, t ->
+                    dupStage = st
+                    dupDone = d
+                    dupTotal = t
+                }
+                dupGroups = g
+                dupScanned = true
+                // "same name" matches are only a hint, so they start excluded from deletion
+                skipped = g.filter { it.kind == DupKind.NAME }.map { it.id }.toSet()
+                keepers = pickKeepers(g, preferBucket)
+                stats = withContext(Dispatchers.IO) { db.stats() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                message = "Duplicate scan failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                dupBusy = false
+            }
+        }
+    }
+
+    fun cancelDuplicates() {
+        dupJob?.cancel()
+    }
+
+    private fun bestOf(videos: List<DupVideo>, prefer: String?): DupVideo {
+        val pool = if (prefer != null) videos.filter { it.bucket == prefer }.ifEmpty { videos } else videos
+        return pool.maxWithOrNull(
+            compareBy<DupVideo>({ it.width.toLong() * it.height }, { it.size }, { -it.dateAdded })
+        ) ?: videos.first()
+    }
+
+    private fun pickKeepers(groups: List<DupGroup>, prefer: String?): Map<Int, Long> =
+        groups.associate { it.id to bestOf(it.videos, prefer).id }
+
+    fun setPrefer(bucket: String?) {
+        preferBucket = bucket
+        keepers = pickKeepers(dupGroups, bucket)
+    }
+
+    fun chooseKeeper(groupId: Int, videoId: Long) {
+        keepers = keepers + (groupId to videoId)
+    }
+
+    fun toggleSkip(groupId: Int) {
+        skipped = if (groupId in skipped) skipped - groupId else skipped + groupId
+    }
+
+    fun deletions(): List<DupVideo> =
+        dupGroups.filter { it.id !in skipped }
+            .flatMap { g -> g.videos.filter { it.id != keepers[g.id] } }
+
+    /** The system shows its own "allow this app to delete/trash N videos?" dialog for this. */
+    fun buildDeleteIntent(): IntentSender? {
+        if (Build.VERSION.SDK_INT < 30) {
+            message = "Deleting videos needs Android 11 or newer."
+            return null
+        }
+        val list = deletions()
+        if (list.isEmpty()) return null
+        pendingDeleteIds = list.map { it.id }
+        val uris = list.map { it.uri }
+        val cr = getApplication<Application>().contentResolver
+        return try {
+            if (useTrash) MediaStore.createTrashRequest(cr, uris, true).intentSender
+            else MediaStore.createDeleteRequest(cr, uris).intentSender
+        } catch (e: Exception) {
+            message = "Couldn't start the delete request: ${e.message ?: e.javaClass.simpleName}"
+            null
+        }
+    }
+
+    fun onDeleteResult(ok: Boolean) {
+        if (!ok) {
+            message = "Nothing was deleted."
+            return
+        }
+        val gone = pendingDeleteIds.toSet()
+        val freed = dupGroups.flatMap { it.videos }.filter { it.id in gone }.sumOf { it.size }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { db.syncVideos() }
+            val next = dupGroups
+                .map { g -> DupGroup(g.id, g.kind, g.videos.filter { it.id !in gone }) }
+                .filter { it.videos.size >= 2 }
+            val ids = next.map { it.id }.toSet()
+            dupGroups = next
+            keepers = keepers.filterKeys { it in ids }
+            skipped = skipped.filter { it in ids }.toSet()
+            message = "${gone.size} video${if (gone.size == 1) "" else "s"} removed · ${fmtSize(freed)} freed"
+            stats = withContext(Dispatchers.IO) { db.stats() }
+            refresh(0)
         }
     }
 

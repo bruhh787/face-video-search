@@ -34,14 +34,16 @@ data class VideoItem(
  *  faces(video_id, time_ms, emb = 512 float32 little-endian)
  */
 class Db private constructor(private val appCtx: Context) :
-    SQLiteOpenHelper(appCtx, "faces.db", null, 2) {
+    SQLiteOpenHelper(appCtx, "faces.db", null, 3) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE videos(id INTEGER PRIMARY KEY, name TEXT, duration_ms INTEGER, " +
                 "size INTEGER, date_added INTEGER, scanned INTEGER NOT NULL DEFAULT 0, " +
-                "faces INTEGER NOT NULL DEFAULT 0)"
+                "faces INTEGER NOT NULL DEFAULT 0, width INTEGER NOT NULL DEFAULT 0, " +
+                "height INTEGER NOT NULL DEFAULT 0, bucket TEXT)"
         )
+        db.execSQL("CREATE TABLE vhash(video_id INTEGER PRIMARY KEY, exact TEXT, phash TEXT)")
         db.execSQL("CREATE TABLE faces(video_id INTEGER NOT NULL, time_ms INTEGER NOT NULL, emb BLOB NOT NULL)")
         db.execSQL("CREATE INDEX idx_faces_video ON faces(video_id)")
     }
@@ -52,9 +54,19 @@ class Db private constructor(private val appCtx: Context) :
             db.execSQL("DELETE FROM faces")
             db.execSQL("UPDATE videos SET scanned=0, faces=0")
         }
+        if (oldVersion < 3) {
+            // v3: duplicate finder needs resolution + folder, and a cache of file/frame hashes
+            db.execSQL("ALTER TABLE videos ADD COLUMN width INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE videos ADD COLUMN height INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE videos ADD COLUMN bucket TEXT")
+            db.execSQL("CREATE TABLE IF NOT EXISTS vhash(video_id INTEGER PRIMARY KEY, exact TEXT, phash TEXT)")
+        }
     }
 
-    private class Row(val id: Long, val name: String, val dur: Long, val size: Long, val date: Long)
+    private class Row(
+        val id: Long, val name: String, val dur: Long, val size: Long, val date: Long,
+        val w: Int, val h: Int, val bucket: String,
+    )
 
     /** Reads every video from MediaStore (fast: metadata only) and syncs the table. */
     fun syncVideos() {
@@ -65,10 +77,18 @@ class Db private constructor(private val appCtx: Context) :
             MediaStore.Video.Media.DURATION,
             MediaStore.Video.Media.SIZE,
             MediaStore.Video.Media.DATE_ADDED,
+            MediaStore.Video.Media.WIDTH,
+            MediaStore.Video.Media.HEIGHT,
+            MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
         )
         appCtx.contentResolver.query(videoBase(), proj, null, null, null)?.use { c ->
             while (c.moveToNext()) {
-                rows.add(Row(c.getLong(0), c.getString(1) ?: "video", c.getLong(2), c.getLong(3), c.getLong(4)))
+                rows.add(
+                    Row(
+                        c.getLong(0), c.getString(1) ?: "video", c.getLong(2), c.getLong(3), c.getLong(4),
+                        c.getInt(5), c.getInt(6), c.getString(7) ?: "",
+                    )
+                )
             }
         }
         val db = writableDatabase
@@ -86,6 +106,9 @@ class Db private constructor(private val appCtx: Context) :
                     put("duration_ms", r.dur)
                     put("size", r.size)
                     put("date_added", r.date)
+                    put("width", r.w)
+                    put("height", r.h)
+                    put("bucket", r.bucket)
                 }
                 val oldSize = known[r.id]
                 if (oldSize == null) {
@@ -96,6 +119,7 @@ class Db private constructor(private val appCtx: Context) :
                         cv.put("scanned", 0)
                         cv.put("faces", 0)
                         db.delete("faces", "video_id=?", arrayOf(r.id.toString()))
+                        db.delete("vhash", "video_id=?", arrayOf(r.id.toString()))
                     }
                     db.update("videos", cv, "id=?", arrayOf(r.id.toString()))
                 }
@@ -104,6 +128,7 @@ class Db private constructor(private val appCtx: Context) :
                 for (id in known.keys) {
                     if (id !in seen) {
                         db.delete("faces", "video_id=?", arrayOf(id.toString()))
+                        db.delete("vhash", "video_id=?", arrayOf(id.toString()))
                         db.delete("videos", "id=?", arrayOf(id.toString()))
                     }
                 }
@@ -157,6 +182,45 @@ class Db private constructor(private val appCtx: Context) :
         } finally {
             db.endTransaction()
         }
+    }
+
+    /** Everything the duplicate finder needs, straight from the local table. */
+    fun allForDedupe(): List<DupVideo> {
+        val out = ArrayList<DupVideo>()
+        readableDatabase.rawQuery(
+            "SELECT id,name,duration_ms,size,width,height,date_added,bucket FROM videos", null
+        ).use { c ->
+            while (c.moveToNext()) {
+                out.add(
+                    DupVideo(
+                        c.getLong(0), c.getString(1) ?: "", c.getLong(2), c.getLong(3),
+                        c.getInt(4), c.getInt(5), c.getLong(6), c.getString(7) ?: ""
+                    )
+                )
+            }
+        }
+        return out
+    }
+
+    /** id -> (exact hash, frame hash); either may be null when not computed yet. */
+    fun getHashes(): Map<Long, Pair<String?, String?>> {
+        val m = HashMap<Long, Pair<String?, String?>>()
+        readableDatabase.rawQuery("SELECT video_id, exact, phash FROM vhash", null).use { c ->
+            while (c.moveToNext()) m[c.getLong(0)] = c.getString(1) to c.getString(2)
+        }
+        return m
+    }
+
+    fun saveExact(id: Long, exact: String) {
+        val db = writableDatabase
+        db.execSQL("INSERT OR IGNORE INTO vhash(video_id) VALUES(?)", arrayOf<Any?>(id))
+        db.execSQL("UPDATE vhash SET exact=? WHERE video_id=?", arrayOf<Any?>(exact, id))
+    }
+
+    fun savePhash(id: Long, phash: String) {
+        val db = writableDatabase
+        db.execSQL("INSERT OR IGNORE INTO vhash(video_id) VALUES(?)", arrayOf<Any?>(id))
+        db.execSQL("UPDATE vhash SET phash=? WHERE video_id=?", arrayOf<Any?>(phash, id))
     }
 
     fun stats(): Stats {
